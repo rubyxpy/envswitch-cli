@@ -1,141 +1,122 @@
 #!/usr/bin/env python3
 """EnvSwitch - Manage and switch between environment configurations."""
 
+from __future__ import annotations
+
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
+from typing import Dict, Any
 
 CONFIG_DIR = Path.home() / ".envswitch"
 CONFIG_FILE = CONFIG_DIR / "envs.json"
 
 
-def init_config():
+def init_config() -> None:
     """Initialize the configuration directory and file."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.exists():
         save_config({})
 
 
-def load_config() -> dict:
+def load_config() -> Dict[str, Any]:
     """Load the environment configurations."""
     init_config()
     try:
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
+        with open(CONFIG_FILE, "r") as f:
+            content = f.read().strip()
+            return json.loads(content) if content else {}
+    except (json.JSONDecodeError, FileNotFoundError, PermissionError):
         return {}
 
 
-def save_config(config: dict):
+def save_config(config: Dict[str, Any]) -> None:
     """Save the environment configurations."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    init_config()
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
 
 
-def add_env(name: str, vars_dict: dict):
+def add_env(name: str, variables: Dict[str, str]) -> None:
     """Add or update an environment configuration."""
     config = load_config()
-    config[name] = vars_dict
+    config[name] = variables
     save_config(config)
-    print(f"Added/updated environment: {name}")
+    print(f"Environment '{name}' added/updated.")
 
 
-def list_envs():
+def remove_env(name: str) -> None:
+    """Remove an environment configuration."""
+    config = load_config()
+    if name in config:
+        del config[name]
+        save_config(config)
+        print(f"Environment '{name}' removed.")
+    else:
+        print(f"Environment '{name}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+
+def list_envs() -> None:
     """List all saved environments."""
     config = load_config()
     if not config:
-        print("No environments configured. Use 'add' to create one.")
+        print("No environments configured.")
         return
     print("Configured environments:")
     for name in config:
         print(f"  - {name}")
 
 
-def switch_env(name: str):
-    """Print commands to switch to an environment."""
+def switch_env(name: str) -> None:
+    """Switch to a specified environment and export variables."""
     config = load_config()
     if name not in config:
-        print(f"Error: Environment '{name}' not found.")
+        print(f"Error: Environment '{name}' does not exist.", file=sys.stderr)
         sys.exit(1)
     
-    env_vars = config[name]
-    print(f"# Environment: {name}")
-    for key, value in env_vars.items():
-        print(f"export {key}="{value}" ")
-
-
-def show_env(name: str):
-    """Show environment variables for a configuration."""
-    config = load_config()
-    if name not in config:
-        print(f"Error: Environment '{name}' not found.")
-        sys.exit(1)
+    exports = []
+    for key, value in config[name].items():
+        safe_value = value.replace("'", "'\"'\"'")
+        exports.append(f"export {key}='{safe_value}'")
     
-    env_vars = config[name]
-    print(f"Environment: {name}")
-    for key, value in env_vars.items():
-        print(f"  {key}={value}")
+    print("\n".join(exports))
 
 
-def remove_env(name: str):
-    """Remove an environment configuration."""
-    config = load_config()
-    if name not in config:
-        print(f"Error: Environment '{name}' not found.")
-        sys.exit(1)
-    del config[name]
-    save_config(config)
-    print(f"Removed environment: {name}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Manage and switch between environment configurations"
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Manage and switch between environment configurations.")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
-    # Add command
-    add_parser = subparsers.add_parser("add", help="Add or update an environment")
-    add_parser.add_argument("name", help="Name of the environment")
-    add_parser.add_argument("variables", nargs="+", help="KEY=VALUE pairs")
+    add_parser = subparsers.add_parser("add", help="Add/update an environment")
+    add_parser.add_argument("name", help="Environment name")
+    add_parser.add_argument("key_values", nargs="+", help="Key=value pairs")
     
-    # List command
+    remove_parser = subparsers.add_parser("remove", help="Remove an environment")
+    remove_parser.add_argument("name", help="Environment name")
+    
     subparsers.add_parser("list", help="List all environments")
     
-    # Switch command
-    switch_parser = subparsers.add_parser("switch", help="Generate export commands")
-    switch_parser.add_argument("name", help="Name of the environment")
-    
-    # Show command
-    show_parser = subparsers.add_parser("show", help="Show environment variables")
-    show_parser.add_argument("name", help="Name of the environment")
-    
-    # Remove command
-    remove_parser = subparsers.add_parser("remove", help="Remove an environment")
-    remove_parser.add_argument("name", help="Name of the environment")
+    switch_parser = subparsers.add_parser("switch", help="Switch to an environment")
+    switch_parser.add_argument("name", help="Environment name")
     
     args = parser.parse_args()
     
     if args.command == "add":
-        vars_dict = {}
-        for var in args.variables:
-            if "=" not in var:
-                print(f"Error: Invalid format '{var}', use KEY=VALUE")
+        variables: Dict[str, str] = {}
+        for kv in args.key_values:
+            if "=" not in kv:
+                print(f"Invalid format '{kv}'. Use KEY=VALUE.", file=sys.stderr)
                 sys.exit(1)
-            key, value = var.split("=", 1)
-            vars_dict[key] = value
-        add_env(args.name, vars_dict)
+            k, v = kv.split("=", 1)
+            variables[k] = v
+        add_env(args.name, variables)
+    elif args.command == "remove":
+        remove_env(args.name)
     elif args.command == "list":
         list_envs()
     elif args.command == "switch":
         switch_env(args.name)
-    elif args.command == "show":
-        show_env(args.name)
-    elif args.command == "remove":
-        remove_env(args.name)
     else:
         parser.print_help()
 

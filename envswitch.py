@@ -25,6 +25,11 @@ class InvalidConfigError(EnvSwitchError):
     pass
 
 
+class EnvironmentNotFoundError(EnvSwitchError):
+    """Raised when specified environment does not exist."""
+    pass
+
+
 class EnvSwitch:
     """Core class for managing environment configurations."""
 
@@ -35,97 +40,71 @@ class EnvSwitch:
         self._ensure_config_exists()
 
     def _ensure_config_exists(self) -> None:
-        """Ensure configuration directory and file exist."""
+        """Ensure config directory and file exist with valid structure."""
         self.config_dir.mkdir(parents=True, exist_ok=True)
         if not self.config_file.exists():
-            self._save_config({})
+            self._write_config({})
 
-    def _load_config(self) -> Dict[str, Any]:
-        """Load configuration from file."""
+    def _read_config(self) -> Dict[str, Any]:
+        """Read and return the configuration dictionary."""
         try:
-            with open(self.config_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return {}
-                config = json.loads(content)
-                if not isinstance(config, dict):
-                    raise InvalidConfigError("Configuration must be a JSON object")
-                return config
+            with open(self.config_file, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise InvalidConfigError("Configuration must be a JSON object")
+            return data
         except json.JSONDecodeError as e:
             raise InvalidConfigError(f"Invalid JSON in config file: {e}")
-        except (FileNotFoundError, PermissionError) as e:
-            raise EnvSwitchError(f"Cannot read config file: {e}")
 
-    def _save_config(self, config: Dict[str, Any]) -> None:
-        """Save configuration to file."""
-        try:
-            with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
-        except (PermissionError, OSError) as e:
-            raise EnvSwitchError(f"Cannot write config file: {e}")
+    def _write_config(self, config: Dict[str, Any]) -> None:
+        """Write configuration dictionary to file."""
+        with open(self.config_file, "w") as f:
+            json.dump(config, f, indent=2)
 
-    def add_environment(self, name: str, env_vars: Dict[str, str]) -> None:
-        """Add or update an environment configuration."""
-        if not name or not name.strip():
-            raise ValueError("Environment name cannot be empty")
-        if not isinstance(env_vars, dict):
-            raise ValueError("Environment variables must be a dictionary")
-        
-        config = self._load_config()
-        config[name] = env_vars
-        self._save_config(config)
+    def list_envs(self) -> List[str]:
+        """List all available environment names."""
+        config = self._read_config()
+        return list(config.keys())
 
-    def remove_environment(self, name: str) -> None:
-        """Remove an environment configuration."""
-        config = self._load_config()
+    def get_env(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get environment configuration by name."""
+        config = self._read_config()
         if name not in config:
-            raise ConfigNotFoundError(f"Environment '{name}' not found")
-        
-        del config[name]
-        self._save_config(config)
-
-    def get_environment(self, name: str) -> Dict[str, str]:
-        """Get environment variables for a specific configuration."""
-        config = self._load_config()
-        if name not in config:
-            raise ConfigNotFoundError(f"Environment '{name}' not found")
+            return None
         return config[name]
 
-    def list_environments(self) -> List[str]:
-        """List all available environment names."""
-        config = self._load_config()
-        return sorted(config.keys())
+    def add_env(self, name: str, env_data: Dict[str, Any]) -> None:
+        """Add or update an environment configuration."""
+        config = self._read_config()
+        config[name] = env_data
+        self._write_config(config)
 
-    def apply_environment(self, name: str) -> Dict[str, str]:
-        """Apply environment variables to current process."""
-        env_vars = self.get_environment(name)
-        for key, value in env_vars.items():
-            os.environ[key] = value
-        return env_vars
-
-    def export_environment(self, name: str, format: str = "bash") -> str:
-        """Export environment variables as shell commands."""
-        env_vars = self.get_environment(name)
-        
-        if format == "bash" or format == "sh":
-            lines = [f"export {key}='{value}'" for key, value in env_vars.items()]
-            return "\n".join(lines)
-        elif format == "fish":
-            lines = [f"set -x {key} '{value}'" for key, value in env_vars.items()]
-            return "\n".join(lines)
-        elif format == "powershell":
-            lines = [f"$env:{key} = '{value}'" for key, value in env_vars.items()]
-            return "\n".join(lines)
-        else:
-            raise ValueError(f"Unsupported format: {format}")
-
-    def validate_environment(self, name: str) -> bool:
-        """Validate that an environment configuration exists and is valid."""
-        try:
-            env_vars = self.get_environment(name)
-            return isinstance(env_vars, dict) and all(
-                isinstance(k, str) and isinstance(v, str) 
-                for k, v in env_vars.items()
-            )
-        except ConfigNotFoundError:
+    def remove_env(self, name: str) -> bool:
+        """Remove an environment configuration. Returns True if removed."""
+        config = self._read_config()
+        if name not in config:
             return False
+        del config[name]
+        self._write_config(config)
+        return True
+
+    def switch(self, name: str) -> Dict[str, Any]:
+        """Switch to specified environment. Returns env config or raises error."""
+        config = self._read_config()
+        if name not in config:
+            available = ", ".join(config.keys()) if config else "none"
+            raise EnvironmentNotFoundError(
+                f"Environment '{name}' not found. Available: {available}"
+            )
+        return config[name]
+
+    def apply_env(self, env_data: Dict[str, Any]) -> None:
+        """Apply environment variables to current process."""
+        for key, value in env_data.get("env", {}).items():
+            os.environ[key] = str(value)
+
+    def run_with_env(self, name: str, command: List[str]) -> int:
+        """Switch to environment and run command."""
+        env_data = self.switch(name)
+        self.apply_env(env_data)
+        return os.execvpe(command[0], command, os.environ)
